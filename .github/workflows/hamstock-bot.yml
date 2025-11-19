@@ -3,7 +3,7 @@ name: Hamster Stock Bot
 on:
   schedule:
     # GitHub Actions는 UTC 기준.
-    - cron: "*/1 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: # 수동 실행 버튼도 만들기
 
 jobs:
