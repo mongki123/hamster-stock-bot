@@ -9,7 +9,6 @@ from openai import OpenAI
 import yfinance as yf
 import fear_and_greed
 from zoneinfo import ZoneInfo
-# from flask import Flask, request
 
 # Load secrets (.env or Replit Secrets)
 load_dotenv()
