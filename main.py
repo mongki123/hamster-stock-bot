@@ -10,6 +10,8 @@ import yfinance as yf
 import fear_and_greed
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 # Load secrets (.env or Replit Secrets)
 load_dotenv()
 
