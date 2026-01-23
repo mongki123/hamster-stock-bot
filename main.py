@@ -259,6 +259,9 @@ def build_prompt_for_market_day(market_info: dict) -> str:
     sectors = market_info["sectors"]
     fx_oil_rate = market_info["fx_oil_rate"]
 
+    today_str = today.strftime("%Y-%m-%d")
+    y_str = yesterday.strftime("%Y-%m-%d")
+
     return f"""
     너는 X 계정 “주식하는 동물”을 운영하는 햄스터 캐릭터야.
     반말, 친근한 공감톤, 살짝 개그 섞기.
