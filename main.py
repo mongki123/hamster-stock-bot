@@ -130,12 +130,19 @@ def was_us_market_open_on(date_obj: datetime.date) -> bool:
 def get_symbol_change(symbol: str, target_date: datetime.date):
     """
     해당 symbol의 target_date 종가와 전일 대비 등락률(%)을 반환.
+    yfinance 결과가 MultiIndex 컬럼이 되어도 안전하게 Close 스칼라를 뽑는다.
     """
-    df = yf.download(symbol,
-                     period="10d",
-                     interval="1d",
-                     progress=False,
-                     auto_adjust=False)
+    df = yf.download(
+        symbol,
+        period="10d",
+        interval="1d",
+        progress=False,
+        auto_adjust=False,
+    )
+
+    if df is None or df.empty:
+        raise ValueError(f"{symbol} 데이터가 비어 있음")
+
     df = df.sort_index()
 
     dates = [idx.date() for idx in df.index]
@@ -145,15 +152,23 @@ def get_symbol_change(symbol: str, target_date: datetime.date):
     if idx_pos == 0:
         raise ValueError(f"{symbol} 에 대해 이전 거래일 데이터가 부족함")
 
-    # close_today = float(df.iloc[idx_pos]["Close"])
-    # close_prev = float(df.iloc[idx_pos - 1]["Close"])
+    close_col = df["Close"]
 
-    close_today = float(df["Close"].iloc[idx_pos])
-    close_prev = float(df["Close"].iloc[idx_pos - 1])
+    # ✅ MultiIndex 컬럼인 경우 df["Close"]가 DataFrame이 될 수 있음 → 1열로 축소
+    if isinstance(close_col, pd.DataFrame):
+        close_series = close_col.iloc[:, 0]
+    else:
+        close_series = close_col  # Series
+
+    closes = close_series.to_numpy()
+    close_today = float(closes[idx_pos])
+    close_prev = float(closes[idx_pos - 1])
+
+    if close_prev == 0:
+        raise ValueError(f"{symbol} 이전 종가가 0이라 등락률 계산 불가")
 
     pct = (close_today / close_prev - 1.0) * 100.0
     return close_today, pct
-
 
 def fmt_pct(pct: float) -> str:
     """
