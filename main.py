@@ -73,6 +73,10 @@ HAMSTER_STYLE = (
     "no text, no letters, no watermark, no logo, high quality"
 )
 
+MAX_TWEET_LEN = 280
+SAFE_TWEET_LEN = 270
+MAX_ATTEMPTS = 3
+
 
 # =========================
 # Time / market helpers
@@ -114,11 +118,6 @@ def previous_calendar_day(date_obj: datetime.date) -> datetime.date:
 
 
 def resolve_target_session(now: datetime.datetime) -> tuple[str, datetime.date]:
-    """
-    Weekday after 16:20 ET -> today's US session if it existed.
-    Weekday before close -> previous session.
-    Weekend / holiday -> offday.
-    """
     today = now.date()
 
     if today.weekday() >= 5:
@@ -129,8 +128,6 @@ def resolve_target_session(now: datetime.datetime) -> tuple[str, datetime.date]:
 
     for _ in range(7):
         if was_us_market_open_on(candidate):
-            if candidate == today or not after_close:
-                return "market", candidate
             if candidate != today and today.weekday() < 5 and after_close and not was_us_market_open_on(today):
                 return "offday", candidate
             return "market", candidate
@@ -253,11 +250,44 @@ def fetch_market_info(target_date: datetime.date) -> dict:
 
 
 # =========================
+# Tweet length / parse
+# =========================
+def count_tweet_len(text: str) -> int:
+    length = 0
+    for ch in text:
+        if ord(ch) > 0xFFFF or not ch.isascii():
+            length += 2
+        else:
+            length += 1
+    return length
+
+
+def is_too_long(text: str) -> bool:
+    return count_tweet_len(text) > MAX_TWEET_LEN or len(text) > MAX_TWEET_LEN
+
+
+def split_tweet_and_image_prompt(full_text: str):
+    lines = full_text.split("\n")
+    image_prompt = None
+    tweet_lines = []
+
+    for line in lines:
+        lowered = line.strip().lower()
+        if lowered.startswith("🎨 today's hamster image:") or lowered.startswith("today's hamster image:"):
+            image_prompt = line.split(":", 1)[1].strip()
+        else:
+            tweet_lines.append(line)
+
+    tweet_text = "\n".join(tweet_lines).strip()
+    return tweet_text, image_prompt
+
+
+# =========================
 # Prompts
 # =========================
 def build_prompt_for_market_day(market_info: dict) -> str:
     return f"""
-You are the hamster behind the X account "Market Hamster". (@hamstocky).
+You are the hamster behind the X account "Market Hamster" (@hamstocky).
 Write in casual, clear, global English.
 Sound like a tiny market intern with jokes, not an analyst.
 Never recommend buying or selling anything.
@@ -278,10 +308,13 @@ TWEET RULES
 - Must include Dow, S&P 500, and Nasdaq percentages.
 - Mention sector flow as a vibe, not a lecture.
 - One short hamster line. Dry, cute, slightly self-aware.
+- Use line breaks. Put each index on its own line.
+- Blank line before the hamster joke.
+- Hashtags on the last line.
 - Max 3 emojis.
 - Max 2 hashtags: #USMarkets #MarketClose
-- Mobile line breaks.
-- Whole tweet including hashtags and line breaks MUST be under 220 characters.
+- Whole tweet MUST be under {SAFE_TWEET_LEN} characters, including spaces, line breaks, emojis, and hashtags.
+- Never exceed {MAX_TWEET_LEN} characters.
 - English only.
 
 OUTPUT
@@ -293,7 +326,7 @@ OUTPUT
 
 def build_prompt_for_offday(today_et: datetime.date, previous_day: datetime.date) -> str:
     return f"""
-You are the hamster behind the X account "Market Hamster". (@hamstocky).
+You are the hamster behind the X account "Market Hamster" (@hamstocky).
 Write in casual, clear, global English.
 Never recommend stocks.
 Never invent index numbers.
@@ -306,10 +339,13 @@ CONTEXT
 TWEET RULES
 - Say the market is closed.
 - Then 1-2 lines about patience, rest, studying, or not forcing trades.
-- Keep it light and memorable.
+- Use line breaks. Keep it easy to scan on mobile.
+- Blank line before the hamster joke.
+- Hashtags on the last line.
 - Max 3 emojis.
 - Hashtags: #USMarkets #MarketClosed
-- Whole tweet including hashtags and line breaks MUST be under 220 characters.
+- Whole tweet MUST be under {SAFE_TWEET_LEN} characters, including spaces, line breaks, emojis, and hashtags.
+- Never exceed {MAX_TWEET_LEN} characters.
 - English only.
 
 OUTPUT
@@ -347,28 +383,6 @@ def generate_offday_tweet(today_et: datetime.date, previous_day: datetime.date) 
         ],
     )
     return response.choices[0].message.content.strip()
-
-
-def split_tweet_and_image_prompt(full_text: str):
-    lines = full_text.split("\n")
-    image_prompt = None
-    tweet_lines = []
-
-    for line in lines:
-        lowered = line.strip().lower()
-        if lowered.startswith("🎨 today's hamster image:") or lowered.startswith("today's hamster image:"):
-            image_prompt = line.split(":", 1)[1].strip()
-        else:
-            tweet_lines.append(line)
-
-    tweet_text = "\n".join(tweet_lines).strip()
-    return tweet_text, image_prompt
-
-
-def trim_tweet_length(text: str, max_len: int = 220) -> str:
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 1] + "…"
 
 
 # =========================
@@ -431,6 +445,83 @@ def post_to_x_with_image(tweet_text: str, image_prompt: str | None):
             os.remove(image_path)
 
 
+def generate_tweet_with_retry(mode: str, payload) -> tuple[str, str | None]:
+    last_error = None
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        if mode == "market":
+            full_text = generate_morning_tweet(payload)
+        else:
+            today_et, previous_day = payload
+            full_text = generate_offday_tweet(today_et, previous_day)
+
+        tweet_text, image_prompt = split_tweet_and_image_prompt(full_text)
+
+        print(f"=== ATTEMPT {attempt} RAW ===")
+        print(full_text)
+        print("counted length:", count_tweet_len(tweet_text))
+
+        if not tweet_text:
+            last_error = "empty tweet"
+            continue
+
+        if is_too_long(tweet_text):
+            print(f"Too long ({count_tweet_len(tweet_text)}). Regenerating...")
+            last_error = "too long before post"
+            continue
+
+        if not image_prompt:
+            image_prompt = (
+                "the same chubby hamster at a tiny desk, "
+                "watching red and green candles, warm lamp light"
+            )
+
+        return tweet_text, image_prompt
+
+    raise RuntimeError(f"Failed to generate a valid tweet: {last_error}")
+
+
+def post_to_x_with_retry(mode: str, payload):
+    last_error = None
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        tweet_text, image_prompt = generate_tweet_with_retry(mode, payload)
+
+        print("=== FINAL TWEET ===")
+        print(tweet_text)
+        print("=== IMAGE PROMPT ===")
+        print(image_prompt)
+        print("counted length:", count_tweet_len(tweet_text))
+
+        try:
+            post_to_x_with_image(tweet_text, image_prompt)
+            return
+        except Exception as e:
+            message = str(e).lower()
+            last_error = e
+            print(f"Post failed on attempt {attempt}:", e)
+
+            length_error = any(
+                key in message
+                for key in [
+                    "too long",
+                    "character",
+                    "186",
+                    "tweet text is too long",
+                    "status is over",
+                ]
+            )
+            if attempt < MAX_ATTEMPTS and length_error:
+                print("Length error. Regenerating a shorter tweet...")
+                continue
+            if attempt < MAX_ATTEMPTS:
+                print("Retrying full generation + post...")
+                continue
+            raise
+
+    raise RuntimeError(f"Post failed after retries: {last_error}")
+
+
 # =========================
 # Main
 # =========================
@@ -445,28 +536,10 @@ def run_bot():
     if mode == "market":
         print("US session recap mode")
         market_info = fetch_market_info(target_date)
-        full_text = generate_morning_tweet(market_info)
+        post_to_x_with_retry("market", market_info)
     else:
         print("Market closed mode")
-        full_text = generate_offday_tweet(current.date(), target_date)
-
-    print("=== RAW MODEL OUTPUT ===")
-    print(full_text)
-    print("========================")
-
-    tweet_text, image_prompt = split_tweet_and_image_prompt(full_text)
-    tweet_text = trim_tweet_length(tweet_text, max_len=220)
-
-    if not image_prompt:
-        image_prompt = "the same chubby hamster at a tiny desk, watching red and green candles, warm lamp light"
-
-    print("=== FINAL TWEET ===")
-    print(tweet_text)
-    print("=== IMAGE PROMPT ===")
-    print(image_prompt)
-    print("====================")
-
-    post_to_x_with_image(tweet_text, image_prompt)
+        post_to_x_with_retry("offday", (current.date(), target_date))
 
 
 if __name__ == "__main__":
