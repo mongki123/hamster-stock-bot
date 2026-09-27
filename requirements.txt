@@ -4,3 +4,5 @@ python-dotenv
 yfinance>=0.2.66
 fear-and-greed
 pandas
+python-dotenv
+requests
