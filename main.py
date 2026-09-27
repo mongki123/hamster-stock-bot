@@ -1,6 +1,7 @@
 import os
 import datetime
 import tempfile
+import base64
 
 from dotenv import load_dotenv
 import tweepy
@@ -342,14 +343,22 @@ def generate_hamster_image(image_prompt: str) -> str:
     )
 
     result = client.images.generate(
-        model="dall-e-3",
+        model="gpt-image-2",
         prompt=prompt,
         size="1024x1024",
-        n=1,
+        quality="medium",
     )
 
-    image_url = result.data[0].url
-    img_bytes = requests.get(image_url, timeout=60).content
+    item = result.data[0]
+    image_b64 = getattr(item, "b64_json", None)
+    image_url = getattr(item, "url", None)
+
+    if image_b64:
+        img_bytes = base64.b64decode(image_b64)
+    elif image_url:
+        img_bytes = requests.get(image_url, timeout=60).content
+    else:
+        raise ValueError("이미지 데이터가 없습니다.")
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     tmp.write(img_bytes)
