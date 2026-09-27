@@ -2,8 +2,8 @@ name: Hamster Stock Bot
 
 on:
   schedule:
-    # 07:30 KST = 전날 22:30 UTC
-    - cron: "30 21 * * *"
+    - cron: "30 22 * * 1-5"
+    - cron: "0 14 * * 6"
   workflow_dispatch: # 수동 실행 버튼도 만들기
 
 jobs:
